@@ -132,12 +132,10 @@ async function scrapeVidSrc(id: string, type: ContentType): Promise<APIResponse[
                     if (item.data.startsWith("/prorcp/")) {
                         streamUrl = await vidSrc_PRORCPhandler(item.data.replace("/prorcp/", ""), baseDomain);
                     }
-                    
-                    // Use a dummy URL if the streamUrl is invalid
-                    const finalStreamUrl = streamUrl && streamUrl.startsWith('http') ? streamUrl : 'https://dummy-url.com/invalid.m3u8';
 
-                    if (finalStreamUrl) {
-                        const absoluteUrl = finalStreamUrl.startsWith('http') ? finalStreamUrl : new URL(finalStreamUrl, baseDomain).toString();
+                    // Defensive check: ensure streamUrl is a valid non-empty string
+                    if (streamUrl && streamUrl.length > 0) {
+                        const absoluteUrl = streamUrl.startsWith('http') ? streamUrl : new URL(streamUrl, baseDomain).toString();
                         const hlsData = await fetchAndParseHLS(absoluteUrl);
                         return {
                             name: `[VidSrc] ${title}`,
@@ -147,6 +145,8 @@ async function scrapeVidSrc(id: string, type: ContentType): Promise<APIResponse[
                             hlsData: hlsData,
                             mediaId: id,
                         };
+                    } else {
+                        console.error(`[VidSrc] Stream URL was empty or invalid for hash: ${element.dataHash}`);
                     }
                 }
             } catch (e) {
@@ -170,8 +170,17 @@ async function vidSrc_serversLoad(html: string): Promise<{ servers: VidSrc_Serve
   const servers: VidSrc_Servers[] = [];
   const title = $("title").text() ?? "";
   const iframeSrc = $("iframe").attr("src") ?? "";
-  const baseDomain = iframeSrc ? new URL(iframeSrc.startsWith("//") ? "https:" + iframeSrc : iframeSrc).origin : config.defaultBaseDomain;
   
+  // Defensive check: ensure iframeSrc is valid before creating URL
+  let baseDomain = config.defaultBaseDomain;
+  if (iframeSrc && iframeSrc.length > 0) {
+    try {
+      baseDomain = new URL(iframeSrc.startsWith("//") ? "https:" + iframeSrc : iframeSrc).origin;
+    } catch (e) {
+      console.error("[VidSrc] Invalid iframe source URL, using default base domain.", e);
+    }
+  }
+
   $(".serversList .server").each((_, element) => {
     const server = $(element);
     servers.push({
