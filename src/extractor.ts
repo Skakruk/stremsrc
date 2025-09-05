@@ -63,6 +63,9 @@ function getRandomizedHeaders(referer: string) {
     };
 }
 
+async function delay(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
 
 // --- Main Orchestration Layer ---
 
@@ -114,6 +117,8 @@ async function scrapeVidSrc(id: string, type: ContentType): Promise<APIResponse[
     const rcpFetchPromises = servers
         .filter(s => s.dataHash)
         .map(async (element) => {
+            await delay(1000); // Add a 1-second delay between each request
+
             try {
                 const rcpUrl = `${baseDomain}/rcp/${element.dataHash!}`;
                 const rcpFetch = await fetchWithTimeout(rcpUrl, {
