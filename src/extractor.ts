@@ -99,64 +99,67 @@ interface VidSrc_RCPResponse {
 }
 
 async function scrapeVidSrc(id: string, type: ContentType): Promise<APIResponse[]> {
-    const url = type === "movie" ? `${config.sourceUrl}/movie/${id}` : `${config.sourceUrl}/tv/${id.split(':')[0]}/${id.split(':')[1]}-${id.split(':')[2]}`;
-    
+  const url = type === "movie" ? `${config.sourceUrl}/movie/${id}` : `${config.sourceUrl}/tv/${id.split(':')[0]}/${id.split(':')[1]}-${id.split(':')[2]}`;
+
+  try {
     const embedRes = await fetchWithTimeout(url, { headers: getRandomizedHeaders(config.sourceUrl) });
+    if (!embedRes.ok) {
+        console.error(`[VidSrc] Failed to fetch embed page: ${url}`);
+        return [];
+    }
     const embedText = await embedRes.text();
-    
+
     const { servers, title, baseDomain } = await vidSrc_serversLoad(embedText);
 
     const rcpFetchPromises = servers
-      .filter(s => s.dataHash)
-      .map(element => fetchWithTimeout(`${baseDomain}/rcp/${element.dataHash!}`, {
-          headers: getRandomizedHeaders(baseDomain)
-      }));
-    
-    const rcpHttpResults = await Promise.allSettled(rcpFetchPromises);
+        .filter(s => s.dataHash)
+        .map(async (element) => {
+            try {
+                const rcpUrl = `${baseDomain}/rcp/${element.dataHash!}`;
+                const rcpFetch = await fetchWithTimeout(rcpUrl, {
+                    headers: getRandomizedHeaders(baseDomain),
+                });
 
-    const prosrcrcp = await Promise.all(
-      rcpHttpResults.map(async (result) => {
-        if (result.status === 'fulfilled' && result.value.ok) {
-          return vidSrc_rcpGrabber(await result.value.text());
-        }
-        if (result.status === 'rejected') {
-          console.error("[VidSrc] A server fetch failed:", result.reason);
-        }
-        return null;
-      })
-    );
+                if (!rcpFetch.ok) {
+                    throw new Error(`[VidSrc] RCP fetch failed for ${rcpUrl} with status: ${rcpFetch.status}`);
+                }
 
-    const apiResponse: APIResponse[] = [];
-    for (const item of prosrcrcp) {
-      if (!item || !item.data) continue;
+                const rcpText = await rcpFetch.text();
+                const item = await vidSrc_rcpGrabber(rcpText);
 
-      let streamUrl: string | null = null;
+                if (item && item.data) {
+                    let streamUrl: string | null = item.data;
+                    if (item.data.startsWith("/prorcp/")) {
+                        streamUrl = await vidSrc_PRORCPhandler(item.data.replace("/prorcp/", ""), baseDomain);
+                    }
 
-      if (item.data.startsWith("/prorcp/")) {
-        streamUrl = await vidSrc_PRORCPhandler(item.data.replace("/prorcp/", ""), baseDomain);
-      } else if (item.data.includes(".m3u8") || item.data.startsWith("http")) {
-        streamUrl = item.data;
-      }
+                    if (streamUrl) {
+                        const absoluteUrl = streamUrl.startsWith('http') ? streamUrl : new URL(streamUrl, baseDomain).toString();
+                        const hlsData = await fetchAndParseHLS(absoluteUrl);
+                        return {
+                            name: `[VidSrc] ${title}`,
+                            title: 'HLS Source',
+                            stream: absoluteUrl,
+                            referer: baseDomain,
+                            hlsData: hlsData,
+                            mediaId: id,
+                        };
+                    }
+                }
+            } catch (e) {
+                console.error(`[VidSrc] Error processing server hash ${element.dataHash}:`, e);
+                // Return null to allow Promise.all to continue
+                return null;
+            }
+            return null;
+        });
 
-      if (streamUrl) {
-        try {
-          const absoluteUrl = streamUrl.startsWith('http') ? streamUrl : new URL(streamUrl, baseDomain).toString();
-          const hlsData = await fetchAndParseHLS(absoluteUrl);
-          
-          apiResponse.push({
-            name: `[VidSrc] ${title}`,
-            title: 'HLS Source',
-            stream: absoluteUrl,
-            referer: baseDomain,
-            hlsData: hlsData,
-            mediaId: id,
-          });
-        } catch (e) {
-          console.error(`[VidSrc] Failed to process stream URL: ${streamUrl}`, e);
-        }
-      }
-    }
-    return apiResponse;
+    const results = await Promise.all(rcpFetchPromises);
+    return results.filter(Boolean) as APIResponse[];
+  } catch (e) {
+    console.error(`[VidSrc] A critical error occurred in scrapeVidSrc:`, e);
+    return [];
+  }
 }
 
 async function vidSrc_serversLoad(html: string): Promise<{ servers: VidSrc_Servers[]; title: string; baseDomain: string }> {
