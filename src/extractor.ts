@@ -1,23 +1,18 @@
-/*
-Original vidsrc.xyz extractor by github.com/cool-dev-guy
-Modified and updated by github.com/theditor
-Refactored for robustness, maintainability, and persistent caching.
+/**
+ * @file Extractor for vidsrc.xyz
+ * @description This module provides functionality to scrape stream links for movies and TV shows.
+ * @author Original by cool-dev-guy, updated by theditor, rewritten by Gemini.
+ */
 
-Unified TypeScript module by Gemini.
-*/
-
-import { ContentType } from "stremio-addon-sdk";
 import * as cheerio from "cheerio";
+import { ContentType } from "stremio-addon-sdk";
 import { fetchAndParseHLS, ParsedHLSStream } from "./hls-utils";
 
-// --- Unified Configuration ---
+// --- Configuration ---
 const config = {
-  // VidSrc Config
   sourceUrl: "https://vidsrc.xyz/embed",
   defaultBaseDomain: "https://cloudnestra.com",
-
-  // General Config
-  fetchTimeout: 15000, // 15 seconds, increased for potentially slower sources
+  fetchTimeout: 15000,
   userAgents: [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
@@ -25,201 +20,219 @@ const config = {
   ],
 };
 
-
 // --- Type Definitions ---
-interface APIResponse {
+interface StreamResult {
   name: string;
-  title: string; // Used for descriptive text in Stremio, often includes filename/size
-  stream?: string | null;
-  url?: string | null; // Used for direct video links
-  image?: string | null;
-  mediaId?: string | null;
-  referer?: string | null;
+  title: string;
+  stream: string;
+  referer: string;
   hlsData?: ParsedHLSStream | null;
+  mediaId: string;
 }
 
-// --- Network & Header Utilities ---
-async function fetchWithTimeout(url: string, options: RequestInit = {}, timeout = config.fetchTimeout) {
+interface Server {
+  name: string;
+  dataHash: string;
+}
+
+// --- Utilities ---
+
+/**
+ * Custom error class for better logging and error handling.
+ */
+class ScraperError extends Error {
+  constructor(message: string, public context?: Record<string, any>) {
+    super(message);
+    this.name = "ScraperError";
+  }
+}
+
+/**
+ * Fetches a URL with a specified timeout.
+ */
+async function fetchWithTimeout(url: string, options: RequestInit = {}): Promise<Response> {
   const controller = new AbortController();
-  const id = setTimeout(() => controller.abort(), timeout);
-  try {
-    const response = await fetch(url, { ...options, signal: controller.signal });
-    return response;
-  } finally {
-    clearTimeout(id);
-  }
-}
-
-function getRandomizedHeaders(referer: string) {
-    const userAgent = config.userAgents[Math.floor(Math.random() * config.userAgents.length)];
-    return {
-        "accept": "*/*",
-        "accept-language": "en-US,en;q=0.9",
-        "sec-fetch-dest": "iframe",
-        "sec-fetch-mode": "navigate",
-        "sec-fetch-site": "cross-site",
-        "Referer": `${referer}/`,
-        "User-Agent": userAgent,
-    };
-}
-
-async function delay(ms: number) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-// --- Main Orchestration Layer ---
-
-/**
- * Main function to get stream content.
- * Scrapes directly from all sources without caching.
- */
-export async function getStreamContent(id: string, type: ContentType): Promise<APIResponse[]> {
-    console.log(`Scraping for ${type} ${id}...`);
-    const apiResponse = await scrapeAllContent(id, type);
-    return apiResponse;
-}
-
-/**
- * Executes all scrapers and combines their results.
- */
-async function scrapeAllContent(id: string, type: ContentType): Promise<APIResponse[]> {
-    const vidSrcResult = await scrapeVidSrc(id, type);
-    console.log(`[VidSrc] Success: Found ${vidSrcResult.length} streams.`);
-    return vidSrcResult;
-}
-
-// ===================================================================================
-// --- VIDSRC.XYZ SCRAPER ---
-// ===================================================================================
-
-interface VidSrc_Servers {
-  name: string | null;
-  dataHash: string | null;
-}
-interface VidSrc_RCPResponse {
-  metadata: { image: string };
-  data: string;
-}
-
-async function scrapeVidSrc(id: string, type: ContentType): Promise<APIResponse[]> {
-  const url = type === "movie" ? `${config.sourceUrl}/movie/${id}` : `${config.sourceUrl}/tv/${id.split(':')[0]}/${id.split(':')[1]}-${id.split(':')[2]}`;
-
-  try {
-    const embedRes = await fetchWithTimeout(url, { headers: getRandomizedHeaders(config.sourceUrl) });
-    if (!embedRes.ok) {
-        console.error(`[VidSrc] Failed to fetch embed page: ${url}`);
-        return [];
-    }
-    const embedText = await embedRes.text();
-
-    const { servers, title, baseDomain } = await vidSrc_serversLoad(embedText);
-
-    const rcpFetchPromises = servers
-        .filter(s => s.dataHash)
-        .map(async (element) => {
-            await delay(1000); // Add a 1-second delay between each request
-
-            try {
-                const rcpUrl = `${baseDomain}/rcp/${element.dataHash!}`;
-                const rcpFetch = await fetchWithTimeout(rcpUrl, {
-                    headers: getRandomizedHeaders(baseDomain),
-                });
-
-                if (!rcpFetch.ok) {
-                    throw new Error(`[VidSrc] RCP fetch failed for ${rcpUrl} with status: ${rcpFetch.status}`);
-                }
-
-                const rcpText = await rcpFetch.text();
-                const item = await vidSrc_rcpGrabber(rcpText);
-
-                if (item && item.data) {
-                    let streamUrl: string | null = item.data;
-                    if (item.data.startsWith("/prorcp/")) {
-                        streamUrl = await vidSrc_PRORCPhandler(item.data.replace("/prorcp/", ""), baseDomain);
-                    }
-
-                    // Defensive check: ensure streamUrl is a valid non-empty string
-                    if (streamUrl && streamUrl.length > 0) {
-                        const absoluteUrl = streamUrl.startsWith('http') ? streamUrl : new URL(streamUrl, baseDomain).toString();
-                        const hlsData = await fetchAndParseHLS(absoluteUrl);
-                        return {
-                            name: `[VidSrc] ${title}`,
-                            title: 'HLS Source',
-                            stream: absoluteUrl,
-                            referer: baseDomain,
-                            hlsData: hlsData,
-                            mediaId: id,
-                        };
-                    } else {
-                        console.error(`[VidSrc] Stream URL was empty or invalid for hash: ${element.dataHash}`);
-                    }
-                }
-            } catch (e) {
-                console.error(`[VidSrc] Error processing server hash ${element.dataHash}:`, e);
-                // Return null to allow Promise.all to continue
-                return null;
-            }
-            return null;
-        });
-
-    const results = await Promise.all(rcpFetchPromises);
-    return results.filter(Boolean) as APIResponse[];
-  } catch (e) {
-    console.error(`[VidSrc] A critical error occurred in scrapeVidSrc:`, e);
-    return [];
-  }
-}
-
-async function vidSrc_serversLoad(html: string): Promise<{ servers: VidSrc_Servers[]; title: string; baseDomain: string }> {
-  const $ = cheerio.load(html);
-  const servers: VidSrc_Servers[] = [];
-  const title = $("title").text() ?? "";
-  const iframeSrc = $("iframe").attr("src") ?? "";
+  const timeoutId = setTimeout(() => controller.abort(), config.fetchTimeout);
   
-  // Defensive check: ensure iframeSrc is valid before creating URL
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new ScraperError(`Request timed out for URL: ${url}`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+/**
+ * Generates randomized request headers.
+ */
+function getRandomizedHeaders(referer: string): Record<string, string> {
+  const userAgent = config.userAgents[Math.floor(Math.random() * config.userAgents.length)];
+  return {
+    "accept": "*/*",
+    "accept-language": "en-US,en;q=0.9",
+    "sec-fetch-dest": "iframe",
+    "sec-fetch-mode": "navigate",
+    "sec-fetch-site": "cross-site",
+    "Referer": `${referer}/`,
+    "User-Agent": userAgent,
+  };
+}
+
+/**
+ * A simple delay utility.
+ */
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+/**
+ * Validates if a given value is a usable URL string.
+ */
+function isValidUrl(url: any): url is string {
+  return typeof url === 'string' && url.trim() !== '' && (url.startsWith('http') || url.startsWith('//'));
+}
+
+// --- Scraper Core Logic ---
+
+/**
+ * Parses the initial embed page to find server hashes and the content title.
+ * @returns {Promise<{servers: Server[], title: string, baseDomain: string}>}
+ */
+async function fetchAndParseServers(html: string): Promise<{ servers: Server[]; title:string; baseDomain: string }> {
+  const $ = cheerio.load(html);
+  const title = $("title").text().trim();
+  const iframeSrc = $("iframe").attr("src") || "";
+
   let baseDomain = config.defaultBaseDomain;
-  if (iframeSrc && iframeSrc.length > 0) {
+  if (isValidUrl(iframeSrc)) {
     try {
-      baseDomain = new URL(iframeSrc.startsWith("//") ? "https:" + iframeSrc : iframeSrc).origin;
+      baseDomain = new URL(iframeSrc.startsWith("//") ? `https:${iframeSrc}` : iframeSrc).origin;
     } catch (e) {
-      console.error("[VidSrc] Invalid iframe source URL, using default base domain.", e);
+      console.warn(`[VidSrc] Could not parse iframe URL '${iframeSrc}', falling back to default.`);
     }
   }
 
-  $(".serversList .server").each((_, element) => {
-    const server = $(element);
-    servers.push({
-      name: server.text().trim(),
-      dataHash: server.attr("data-hash") ?? null,
-    });
-  });
-
+  const servers: Server[] = $(".serversList .server")
+    .map((_, el) => {
+      const element = $(el);
+      const name = element.text().trim();
+      const dataHash = element.attr("data-hash");
+      return dataHash ? { name, dataHash } : null;
+    })
+    .get()
+    .filter((s): s is Server => s !== null);
+    
   return { servers, title, baseDomain };
 }
 
-async function vidSrc_PRORCPhandler(prorcp: string, baseDomain: string): Promise<string | null> {
-  try {
-    const prorcpFetch = await fetchWithTimeout(`${baseDomain}/prorcp/${prorcp}`, {
-      headers: getRandomizedHeaders(baseDomain),
-    });
-    if (!prorcpFetch.ok) return null;
+/**
+ * Extracts the stream source URL from RCP or PRO-RCP responses.
+ * @returns {Promise<string | null>} A valid stream URL or null.
+ */
+async function getStreamUrlFromServer(server: Server, baseDomain: string): Promise<string | null> {
+  // 1. Fetch the RCP page
+  const rcpUrl = `${baseDomain}/rcp/${server.dataHash}`;
+  const rcpRes = await fetchWithTimeout(rcpUrl, { headers: getRandomizedHeaders(baseDomain) });
+  if (!rcpRes.ok) throw new ScraperError("Failed to fetch RCP", { rcpUrl, status: rcpRes.status });
+  const rcpText = await rcpRes.text();
+  
+  // 2. Extract the initial source link
+  const initialSrcMatch = rcpText.match(/src:\s*['"]([^'"]*)['"]/);
+  let streamUrl = initialSrcMatch ? initialSrcMatch[1] : null;
+
+  if (!streamUrl) return null;
+  
+  // 3. If it's a PRO-RCP link, fetch the final URL
+  if (streamUrl.startsWith("/prorcp/")) {
+    const prorcpId = streamUrl.replace("/prorcp/", "");
+    const prorcpUrl = `${baseDomain}/prorcp/${prorcpId}`;
+    const prorcpRes = await fetchWithTimeout(prorcpUrl, { headers: getRandomizedHeaders(baseDomain) });
+    if (!prorcpRes.ok) return null; // Fail silently if PRO-RCP fetch fails
+    const prorcpText = await prorcpRes.text();
     
-    const prorcpResponse = await prorcpFetch.text();
-    const regex = /file:\s*['"]([^'"]*)['"]/gm;
-    const match = regex.exec(prorcpResponse);
-    return match && match[1] ? match[1] : null;
+    const finalFileMatch = prorcpText.match(/file:\s*['"]([^'"]*)['"]/);
+    streamUrl = finalFileMatch ? finalFileMatch[1] : null;
+  }
+  
+  return streamUrl;
+}
+
+/**
+ * Processes a single server to get a fully-formed stream result.
+ * @returns {Promise<StreamResult | null>}
+ */
+async function processServer(server: Server, baseDomain: string, title: string, mediaId: string): Promise<StreamResult | null> {
+  try {
+    await delay(1000); // Stagger requests
+    const streamUrl = await getStreamUrlFromServer(server, baseDomain);
+
+    if (!isValidUrl(streamUrl)) {
+      console.warn(`[VidSrc] Invalid stream URL found for hash ${server.dataHash}:`, streamUrl);
+      return null;
+    }
+    
+    const absoluteUrl = streamUrl.startsWith("//") ? `https:${streamUrl}` : streamUrl;
+    const hlsData = await fetchAndParseHLS(absoluteUrl);
+    
+    return {
+      name: `[VidSrc] ${title}`,
+      title: 'HLS Source',
+      stream: absoluteUrl,
+      referer: baseDomain,
+      hlsData,
+      mediaId,
+    };
   } catch (error) {
-    console.error("[VidSrc] PRORCPhandler error:", error);
+    const context = error instanceof ScraperError ? error.context : {};
+    console.error(`[VidSrc] Failed to process server ${server.name} (${server.dataHash}): ${error instanceof Error ? error.message : 'Unknown error'}`, context);
     return null;
   }
 }
 
-async function vidSrc_rcpGrabber(html: string): Promise<VidSrc_RCPResponse | null> {
-  const regex = /src:\s*['"]([^'"]*)['"]/;
-  const match = html.match(regex);
-  if (!match) return null;
-  return {
-    metadata: { image: "" },
-    data: match[1],
-  };
+// --- Main Export ---
+
+/**
+ * The main orchestrator function to get stream content.
+ * @param id - The IMDb ID for the content (e.g., "tt0121955" or "tt0121955:1:1").
+ * @param type - The type of content, "movie" or "series".
+ * @returns {Promise<StreamResult[]>} An array of available stream results.
+ */
+export async function getStreamContent(id: string, type: ContentType): Promise<StreamResult[]> {
+  const [imdbId, season, episode] = id.split(':');
+  const url = type === "movie" 
+    ? `${config.sourceUrl}/movie/${imdbId}` 
+    : `${config.sourceUrl}/tv/${imdbId}/${season}-${episode}`;
+  
+  console.log(`Scraping for ${type} ${id} at ${url}`);
+
+  try {
+    // 1. Fetch the main embed page
+    const embedRes = await fetchWithTimeout(url, { headers: getRandomizedHeaders(config.sourceUrl) });
+    if (!embedRes.ok) throw new ScraperError("Failed to fetch initial embed page", { url, status: embedRes.status });
+    const embedHtml = await embedRes.text();
+
+    // 2. Parse out the servers and metadata
+    const { servers, title, baseDomain } = await fetchAndParseServers(embedHtml);
+    if (servers.length === 0) {
+      console.warn(`[VidSrc] No servers were found on the page for ${id}.`);
+      return [];
+    }
+    console.log(`[VidSrc] Found ${servers.length} potential servers for title: "${title}"`);
+
+    // 3. Process all found servers in parallel
+    const streamPromises = servers.map(server => processServer(server, baseDomain, title, id));
+    const results = await Promise.all(streamPromises);
+
+    // 4. Filter out any null results from failed attempts
+    const validStreams = results.filter((r): r is StreamResult => r !== null);
+    console.log(`[VidSrc] Successfully extracted ${validStreams.length} valid streams.`);
+    return validStreams;
+
+  } catch (error) {
+    const context = error instanceof ScraperError ? error.context : {};
+    console.error(`[VidSrc] A critical error occurred during the scraping process for ${id}: ${error instanceof Error ? error.message : 'Unknown error'}`, context);
+    return []; // Always return an array, even on critical failure
+  }
 }
