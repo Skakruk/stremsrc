@@ -13,7 +13,7 @@ import { fetchAndParseHLS, ParsedHLSStream } from "./hls-utils";
 // --- Unified Configuration ---
 const config = {
   // VidSrc Config
-  sourceUrl: "https://fmovies.gd/embed",
+  sourceUrl: "https://vidsrc.xyz/embed",
   defaultBaseDomain: "https://cloudnestra.com",
 
   // General Config
