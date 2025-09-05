@@ -15,6 +15,12 @@ export interface ParsedHLSStream {
 }
 
 export function parseHLSMaster(masterPlaylistContent: string, baseUrl: string): ParsedHLSStream {
+  // Validate baseUrl to prevent crashes with invalid URLs
+  if (!baseUrl || !baseUrl.startsWith('http')) {
+    console.error("Invalid base URL provided to parseHLSMaster. Cannot process playlist.");
+    return { masterUrl: baseUrl, qualities: [] };
+  }
+
   const parser = new Parser();
   parser.push(masterPlaylistContent);
   parser.end();
@@ -35,14 +41,14 @@ export function parseHLSMaster(masterPlaylistContent: string, baseUrl: string): 
       if (!attributes) return;
 
       const bandwidth = Number(attributes.BANDWIDTH || 0);
-      const resolution = attributes.RESOLUTION ? 
+      const resolution = attributes.RESOLUTION ?
         `${attributes.RESOLUTION.width}x${attributes.RESOLUTION.height}` : undefined;
       const codecs = attributes.CODECS as string | undefined;
       const frameRate = attributes['FRAME-RATE'] as number | undefined;
 
-      // Construct the full URL
-      const playlistUrl = playlist.uri.startsWith('http') 
-        ? playlist.uri 
+      // Construct the full URL, safely using the validated baseUrl
+      const playlistUrl = playlist.uri.startsWith('http')
+        ? playlist.uri
         : new URL(playlist.uri, baseUrl).toString();
 
       // Create a readable title
@@ -90,11 +96,17 @@ export function parseHLSMaster(masterPlaylistContent: string, baseUrl: string): 
 
 export async function fetchAndParseHLS(url: string): Promise<ParsedHLSStream | null> {
   try {
+    // Validate the incoming URL before making the fetch request
+    if (!url || !url.startsWith('http')) {
+        console.error('Invalid URL provided to fetchAndParseHLS.');
+        return null;
+    }
+    
     const response = await fetch(url);
     if (!response.ok) {
       return null;
     }
-    
+
     const content = await response.text();
     
     // Check if this is a master playlist (contains #EXT-X-STREAM-INF)
