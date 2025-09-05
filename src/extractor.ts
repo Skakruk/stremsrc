@@ -132,9 +132,12 @@ async function scrapeVidSrc(id: string, type: ContentType): Promise<APIResponse[
                     if (item.data.startsWith("/prorcp/")) {
                         streamUrl = await vidSrc_PRORCPhandler(item.data.replace("/prorcp/", ""), baseDomain);
                     }
+                    
+                    // Use a dummy URL if the streamUrl is invalid
+                    const finalStreamUrl = streamUrl && streamUrl.startsWith('http') ? streamUrl : 'https://dummy-url.com/invalid.m3u8';
 
-                    if (streamUrl) {
-                        const absoluteUrl = streamUrl.startsWith('http') ? streamUrl : new URL(streamUrl, baseDomain).toString();
+                    if (finalStreamUrl) {
+                        const absoluteUrl = finalStreamUrl.startsWith('http') ? finalStreamUrl : new URL(finalStreamUrl, baseDomain).toString();
                         const hlsData = await fetchAndParseHLS(absoluteUrl);
                         return {
                             name: `[VidSrc] ${title}`,
