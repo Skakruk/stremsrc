@@ -13,6 +13,11 @@ exports.parseHLSMaster = parseHLSMaster;
 exports.fetchAndParseHLS = fetchAndParseHLS;
 const m3u8_parser_1 = require("m3u8-parser");
 function parseHLSMaster(masterPlaylistContent, baseUrl) {
+    // Validate baseUrl to prevent crashes with invalid URLs
+    if (!baseUrl || !baseUrl.startsWith('http')) {
+        console.error("Invalid base URL provided to parseHLSMaster. Cannot process playlist.");
+        return { masterUrl: baseUrl, qualities: [] };
+    }
     const parser = new m3u8_parser_1.Parser();
     parser.push(masterPlaylistContent);
     parser.end();
@@ -35,7 +40,7 @@ function parseHLSMaster(masterPlaylistContent, baseUrl) {
                 `${attributes.RESOLUTION.width}x${attributes.RESOLUTION.height}` : undefined;
             const codecs = attributes.CODECS;
             const frameRate = attributes['FRAME-RATE'];
-            // Construct the full URL
+            // Construct the full URL, safely using the validated baseUrl
             const playlistUrl = playlist.uri.startsWith('http')
                 ? playlist.uri
                 : new URL(playlist.uri, baseUrl).toString();
@@ -89,6 +94,11 @@ function parseHLSMaster(masterPlaylistContent, baseUrl) {
 function fetchAndParseHLS(url) {
     return __awaiter(this, void 0, void 0, function* () {
         try {
+            // Validate the incoming URL before making the fetch request
+            if (!url || !url.startsWith('http')) {
+                console.error('Invalid URL provided to fetchAndParseHLS.');
+                return null;
+            }
             const response = yield fetch(url);
             if (!response.ok) {
                 return null;

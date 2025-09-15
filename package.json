@@ -1,10 +1,11 @@
 {
 	"name": "stremio-addon-stremsrc",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "A VidSRC extractor for stremio",
 	"main": "./dist/index.js",
 	"scripts": {
 		"start": "node ./dist/index.js",
+		"dev": "tsx watch ./src/index.js",
 		"build": "tsc"
 	},
 	"dependencies": {
@@ -17,6 +18,7 @@
 		"@types/m3u8-parser": "^7.2.3",
 		"@types/node": "^22.15.23",
 		"@types/stremio-addon-sdk": "^1.6.12",
+		"tsx": "^4.20.5",
 		"typescript": "^5.8.3"
 	}
 }
